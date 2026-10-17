@@ -1,0 +1,45 @@
+# Data and artifacts
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/artifacts/*
+!data/artifacts/.gitkeep
+
+# Sandbox temporary executions
+sandbox/workspace/*
+!sandbox/workspace/.gitkeep
+
+# Environment variables
+.env
+.env.local
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# Ollama and local model keys
+.ollama/
+*.key
+*.pem
+id_ed25519*
+id_rsa*
+
+# ML artifacts, cache and training logs
+catboost_info/
+data/.cache/
+lightning_logs/
+wandb/
