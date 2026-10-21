@@ -6,15 +6,23 @@ data/processed/*
 data/artifacts/*
 !data/artifacts/.gitkeep
 
+# Submissions and generated predictions
+submission*.csv
+**/submission*.csv
+!sample_submission*.csv
+!**/sample_submission*.csv
+*.tmp
+*.pred
+
 # Sandbox temporary executions
 sandbox/workspace/*
 !sandbox/workspace/.gitkeep
 
 # Environment variables
 .env
-.env.local
+.env.*
 
-# Python cache and virtual environments
+# Python cache, testing and virtual environments
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,12 +32,17 @@ env/
 venv/
 .venv/
 ENV/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # IDE and OS
 .vscode/
 .idea/
 .DS_Store
 *.log
+automl_agent.log
+**/automl_agent.log
 
 # Ollama and local model keys
 .ollama/
@@ -38,8 +51,22 @@ ENV/
 id_ed25519*
 id_rsa*
 
-# ML artifacts, cache and training logs
+# ML artifacts, checkpoints, cache and training logs
+AutogluonModels/
+**/AutogluonModels/
+.flaml/
+mlruns/
 catboost_info/
 data/.cache/
 lightning_logs/
 wandb/
+
+# Serialized models and weights
+*.pkl
+*.joblib
+*.pt
+*.pth
+*.onnx
+
+# Large documents & presentations
+*.pdf

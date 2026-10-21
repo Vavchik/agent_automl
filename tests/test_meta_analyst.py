@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import pandas as pd
 import pytest
+pd = pytest.importorskip("pandas")
 
 from agent.meta_analyst import (
     build_meta_analysis_prompt,

@@ -39,8 +39,12 @@ def get_meta_analysis_system_prompt() -> str:
     )
 
 
-def build_meta_analysis_prompt(metadata: Union[dict[str, Any], DataProfileReport, str]) -> str:
-    """Оборачивает сериализованные метаданные в пользовательский запрос."""
+def build_meta_analysis_prompt(
+    metadata: Union[dict[str, Any], DataProfileReport, str],
+    task_description: Optional[str] = None,
+    metric_hint: Optional[str] = None,
+) -> str:
+    """Оборачивает сериализованные метаданные и контекст task.md в запрос к LLM."""
     if isinstance(metadata, DataProfileReport):
         meta_json = metadata.to_json(indent=2)
     elif isinstance(metadata, dict):
@@ -48,12 +52,23 @@ def build_meta_analysis_prompt(metadata: Union[dict[str, Any], DataProfileReport
     else:
         meta_json = str(metadata)
 
-    return (
-        "Вот метаданные датасета в формате JSON:\n\n"
-        f"```json\n{meta_json}\n```\n\n"
-        "На основе дерева решений (IF-THEN) выбери тип задачи, черновую и боевую модель, "
-        "функцию потерь и целевую метрику. Верни результат строго в виде валидного JSON."
+    sections = []
+    if task_description:
+        sections.append(f"## Описание задачи из task.md:\n{task_description.strip()}\n")
+    if metric_hint:
+        sections.append(f"## Требуемая метрика оценки (из условия):\n{metric_hint}\n")
+
+    sections.append(
+        f"## Метаданные датасета (JSON):\n```json\n{meta_json}\n```\n\n"
+        "На основе описания задачи, контекста предметной области и метаданных выбери:\n"
+        "1. Тип задачи ('binary_classification', 'multiclass_classification', 'regression').\n"
+        "2. Черновую модель (LightGBM/Ridge/LogisticRegression) для быстрого Feature Importance.\n"
+        "3. Боевую модель (CatBoost/LightGBM/Ridge/TabNet) с Optuna.\n"
+        "4. Функцию потерь ('rmse', 'logloss', 'multiclass').\n"
+        "5. Метрику ('rmse', 'macro_f1', 'roc_auc', 'accuracy').\n"
+        "Верни результат строго в виде валидного JSON."
     )
+    return "\n".join(sections)
 
 
 # --------------------------------------------------------------------------- #
@@ -62,6 +77,8 @@ def build_meta_analysis_prompt(metadata: Union[dict[str, Any], DataProfileReport
 
 def rule_based_selection(
     metadata: Union[dict[str, Any], DataProfileReport],
+    metric_hint: Optional[str] = None,
+    task_type_hint: Optional[str] = None,
 ) -> ModelSelectionDecision:
     """
     Реализует дерево решений напрямую на Python.
@@ -117,19 +134,29 @@ def rule_based_selection(
         )
 
 
-    # Уточнённая логика определения типа задачи:
-    # - Бинарная: ровно 2 уникальных значения таргета (независимо от типа колонки).
-    # - Мультикласс: категориальный таргет ИЛИ целочисленный numeric с малым nunique (≤ 15).
-    #   Порог 15 вместо 20 — снижает риск путать порядковую регрессию с классификацией.
-    # - Регрессия: всё остальное (дробный numeric, большое nunique).
-    if target_nunique == 2:
+    # Определение задачи с учетом подсказок (hints)
+    if task_type_hint:
+        hint_lower = task_type_hint.lower()
+        if "regress" in hint_lower:
+            task_type = "regression"
+            loss_function = "rmse"
+            metric = "rmse"
+        elif "multi" in hint_lower or target_nunique > 2:
+            task_type = "multiclass_classification"
+            loss_function = "multiclass"
+            metric = "macro_f1"
+        else:
+            task_type = "binary_classification"
+            loss_function = "logloss"
+            metric = "roc_auc"
+    elif target_nunique == 2:
         task_type = "binary_classification"
         loss_function = "logloss"
         metric = "roc_auc"
     elif target_type == "category" or (
         target_type in ("numeric", "text")
         and not has_fractional
-        and 2 < target_nunique <= 15
+        and 2 < target_nunique <= 50
     ):
         task_type = "multiclass_classification"
         loss_function = "multiclass"
@@ -138,6 +165,9 @@ def rule_based_selection(
         task_type = "regression"
         loss_function = "rmse"
         metric = "rmse"
+
+    if metric_hint:
+        metric = metric_hint.lower()
 
 
     # Проверка линейных триггеров
@@ -247,23 +277,37 @@ def rule_based_selection(
 
 def select_model_and_metric(
     metadata: Union[dict[str, Any], DataProfileReport],
+    task_description: Optional[str] = None,
+    metric_hint: Optional[str] = None,
+    task_type_hint: Optional[str] = None,
     ask_llm_fn: Optional[Callable[[str, str], str]] = None,
 ) -> ModelSelectionDecision:
     """
-    Отправляет метаданные в LLM и парсит возвращенный JSON в ModelSelectionDecision.
+    Отправляет метаданные и контекст задачи в LLM и парсит возвращенный JSON в ModelSelectionDecision.
     При сбое или недоступности модели переключается на правило `rule_based_selection`.
     """
     system_prompt = get_meta_analysis_system_prompt()
-    user_prompt = build_meta_analysis_prompt(metadata)
+    user_prompt = build_meta_analysis_prompt(
+        metadata=metadata,
+        task_description=task_description,
+        metric_hint=metric_hint,
+    )
 
     caller = ask_llm_fn or ask_llm
 
     try:
         raw_response = caller(system_prompt, user_prompt)
         parsed_json = extract_json(raw_response)
-        return ModelSelectionDecision.from_dict(parsed_json)
+        decision = ModelSelectionDecision.from_dict(parsed_json)
+        if metric_hint:
+            decision.metric = metric_hint.lower()
+        return decision
     except Exception as exc:
         # Fallback на правила
-        decision = rule_based_selection(metadata)
+        decision = rule_based_selection(
+            metadata=metadata,
+            metric_hint=metric_hint,
+            task_type_hint=task_type_hint,
+        )
         decision.reasoning += f" [Режим fallback: {type(exc).__name__}: {exc}]"
         return decision

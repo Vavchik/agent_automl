@@ -10,11 +10,22 @@ from __future__ import annotations
 
 from typing import Optional
 
-import pandas as pd
-from sklearn.model_selection import (
-    GroupShuffleSplit,
-    train_test_split,
-)
+import numpy as np
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+try:
+    from sklearn.model_selection import (
+        GroupKFold,
+        GroupShuffleSplit,
+        KFold,
+        StratifiedKFold,
+        TimeSeriesSplit,
+        train_test_split,
+    )
+except ImportError:
+    GroupKFold = GroupShuffleSplit = KFold = StratifiedKFold = TimeSeriesSplit = train_test_split = None
 
 from ml_core.schemas import SplitResult
 
@@ -47,31 +58,74 @@ def detect_split_strategy(
     return "kfold"
 
 
+def get_cv_folds(
+    df: pd.DataFrame,
+    target: str,
+    strategy: Optional[str] = None,
+    n_splits: int = 5,
+    time_col: Optional[str] = None,
+    group_col: Optional[str] = None,
+    random_state: int = 42,
+) -> list[tuple[Any, Any]]:
+    """
+    Генерирует список кортежей (train_idx, val_idx) для честной K-Fold кросс-валидации.
+    """
+    if strategy is None:
+        strategy = detect_split_strategy(df, target, time_col=time_col, group_col=group_col)
+
+    if strategy == "time_series":
+        df_sorted = df.sort_values(by=time_col) if time_col else df
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        return list(tscv.split(df_sorted))
+
+    if strategy == "group" and group_col and group_col in df.columns:
+        gkf = GroupKFold(n_splits=n_splits)
+        return list(gkf.split(df, groups=df[group_col]))
+
+    if strategy == "stratified" and StratifiedKFold is not None and pd is not None and isinstance(df, pd.DataFrame):
+        target_s = df[target].dropna()
+        can_stratify = not pd.api.types.is_float_dtype(target_s) and not (target_s.value_counts() < n_splits).any()
+        if can_stratify:
+            skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+            return list(skf.split(df, df[target]))
+
+    if KFold is not None and pd is not None and isinstance(df, pd.DataFrame):
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        return list(kf.split(df))
+
+    # Чистый NumPy fallback (когда scikit-learn отсутствует или передан ndarray)
+    n_samples = len(df)
+    indices = np.arange(n_samples)
+    if random_state is not None:
+        rng = np.random.default_rng(random_state)
+        rng.shuffle(indices)
+    folds = []
+    fold_sizes = np.full(n_splits, n_samples // n_splits, dtype=int)
+    fold_sizes[: n_samples % n_splits] += 1
+    current = 0
+    for fold_size in fold_sizes:
+        start, stop = current, current + fold_size
+        val_idx = indices[start:stop]
+        tr_idx = np.concatenate([indices[:start], indices[stop:]])
+        folds.append((tr_idx, val_idx))
+        current = stop
+    return folds
+
+
 def split_data(
     df: pd.DataFrame,
     target: str,
     strategy: Optional[str] = None,
     test_size: float = 0.2,
     val_size: float = 0.0,
+    n_folds: int = 5,
     time_col: Optional[str] = None,
     group_col: Optional[str] = None,
     random_state: int = 42,
 ) -> SplitResult:
     """
-    Разбивает датасет на обучающую, тестовую (и опционально валидационную) выборки.
-
-    Args:
-        df: исходный датасет.
-        target: целевая переменная.
-        strategy: 'stratified', 'time_series', 'group', 'kfold' (или None для автодетекта).
-        test_size: доля тестовой выборки (например, 0.2).
-        val_size: доля валидационной выборки от исходного датасета (например, 0.1).
-        time_col: имя колонки времени для time_series.
-        group_col: имя колонки групп для group.
-        random_state: сид генератора случайных чисел.
-
-    Returns:
-        Объект SplitResult с train, test, val датафреймами.
+    Разбивает датасет на обучающую, тестовую (и опционально валидационную) выборки
+    и генерирует K-Fold сплиты на обучающей части.
     """
     if target not in df.columns:
         raise KeyError(f"Целевая колонка '{target}' не найдена в таблице")
@@ -79,8 +133,12 @@ def split_data(
     if strategy is None:
         strategy = detect_split_strategy(df, target, time_col=time_col, group_col=group_col)
 
-    # 1. Временное разбиение (Time Series) — строго без заглядывания в будущее
-    if strategy == "time_series":
+    if test_size <= 0.0:
+        # Без отложенного теста (например, когда test.csv уже дан отдельно организаторами)
+        train_df = df.copy()
+        test_df = pd.DataFrame(columns=df.columns)
+        val_df = None
+    elif strategy == "time_series":
         df_sorted = df.sort_values(by=time_col) if time_col else df
         n_total = len(df_sorted)
         n_test = int(n_total * test_size)
@@ -90,8 +148,6 @@ def split_data(
         train_df = df_sorted.iloc[:n_train].copy()
         val_df = df_sorted.iloc[n_train : n_train + n_val].copy() if n_val > 0 else None
         test_df = df_sorted.iloc[n_train + n_val :].copy()
-
-    # 2. Групповое разбиение (Group Split) — предотвращает утечки по группам
     elif strategy == "group":
         if not group_col or group_col not in df.columns:
             raise ValueError("Для стратегии 'group' необходимо указать group_col")
@@ -108,8 +164,6 @@ def split_data(
             tr_idx, v_idx = next(val_splitter.split(train_df, groups=train_df[group_col]))
             val_df = train_df.iloc[v_idx].copy()
             train_df = train_df.iloc[tr_idx].copy()
-
-    # 3. Стратифицированное разбиение (Stratified Split) — для классификации
     elif strategy == "stratified":
         target_s = df[target].dropna()
         can_stratify = not pd.api.types.is_float_dtype(target_s) and not (target_s.value_counts() < 2).any()
@@ -139,8 +193,6 @@ def split_data(
         test_df = test_df.copy()
         if val_df is not None:
             val_df = val_df.copy()
-
-    # 4. Случайное разбиение (K-Fold / Random Split) — для регрессии
     else:
         train_df, test_df = train_test_split(
             df,
@@ -160,6 +212,19 @@ def split_data(
         if val_df is not None:
             val_df = val_df.copy()
 
+    # Генерация K-Fold сплитов на train_df
+    folds = None
+    if n_folds > 1 and len(train_df) >= n_folds:
+        folds = get_cv_folds(
+            df=train_df,
+            target=target,
+            strategy=strategy,
+            n_splits=n_folds,
+            time_col=time_col,
+            group_col=group_col,
+            random_state=random_state,
+        )
+
     return SplitResult(
         train=train_df,
         test=test_df,
@@ -168,5 +233,6 @@ def split_data(
         target=target,
         time_col=time_col,
         group_col=group_col,
+        folds=folds,
     )
 

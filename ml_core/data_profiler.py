@@ -160,11 +160,11 @@ def _correlation(
 
 
 def _target_correlation(
-    df: pd.DataFrame, column_types: dict[str, str], target: str
+    df: pd.DataFrame, column_types: dict[str, str], target: str, id_col: Optional[str] = None
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for col in df.columns:
-        if col == target:
+        if col == target or (id_col and col == id_col) or col.lower() in ("id", "index", "uid"):
             continue
         out = _correlation(df[col], column_types[col], df[target], column_types[target])
         if out is None:
@@ -185,6 +185,7 @@ def profile_data(
     df: pd.DataFrame,
     column_types: dict[str, str],
     target: Optional[str] = None,
+    id_col: Optional[str] = None,
     head_rows: int = 5,
 ) -> DataProfileReport:
     """
@@ -194,6 +195,7 @@ def profile_data(
         df: датасет, приведённый к типам (результат `infer_types`).
         column_types: {колонка: тип} (результат `infer_types`).
         target: имя таргета; если задано - считается корреляция признаков с ним.
+        id_col: имя колонки ID (исключается из расчета корреляций).
         head_rows: сколько первых строк включить в отчёт.
     """
     if target is not None and target not in df.columns:
@@ -208,5 +210,5 @@ def profile_data(
         distributions={c: _distribution(df[c], column_types[c]) for c in df.columns},
         head=json.loads(df.head(head_rows).to_json(orient="records", date_format="iso")),
         target=target,
-        target_correlation=_target_correlation(df, column_types, target) if target else {},
+        target_correlation=_target_correlation(df, column_types, target, id_col=id_col) if target else {},
     )

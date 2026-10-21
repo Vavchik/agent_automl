@@ -18,14 +18,18 @@
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
 import pytest
+
+np = pytest.importorskip("numpy")
+pd = pytest.importorskip("pandas")
+sklearn = pytest.importorskip("sklearn")
+pytest.importorskip("langgraph")
+
 from sklearn.datasets import make_classification, make_regression
 from sklearn.linear_model import LogisticRegression, Ridge
 
 from agent.graph import app as pipeline_graph, make_initial_state, should_escalate_to_tier2, should_escalate_to_tier3
-from ml_core.evaluator import compute_dummy_score, compute_metric, evaluate_model
+from ml_core.evaluator import compute_dummy_score, compute_metric, evaluate_model, is_metric_better, evaluate_oof
 from ml_core.schemas import EvalResult, SplitResult
 
 
@@ -256,3 +260,20 @@ class TestGraphEscalationRouting:
         assert final_state["eval_result"].tier1_passed is False
         # Проверяем, что граф эскалировал до Tier 3
         assert final_state["tier"] == 3
+
+
+def test_is_metric_better_directions():
+    # Для RMSE меньшее значение лучше
+    assert is_metric_better(new_score=0.45, base_score=0.50, metric="rmse") is True
+    assert is_metric_better(new_score=0.55, base_score=0.50, metric="rmse") is False
+
+    # Для Macro F1 большее значение лучше
+    assert is_metric_better(new_score=0.85, base_score=0.80, metric="macro_f1") is True
+    assert is_metric_better(new_score=0.75, base_score=0.80, metric="macro_f1") is False
+
+
+def test_evaluate_oof_macro_f1():
+    y_true = np.array([0, 1, 2, 0, 1, 2])
+    y_pred = np.array([0, 1, 2, 0, 1, 2])
+    score = evaluate_oof(y_true, y_pred, metric="macro_f1")
+    assert score == 1.0

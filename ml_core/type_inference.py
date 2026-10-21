@@ -167,19 +167,46 @@ def _infer_column(col: pd.Series, category_threshold: float) -> tuple[pd.Series,
 def infer_types(
     df: pd.DataFrame,
     category_threshold: float = CATEGORY_THRESHOLD,
+    known_types: Optional[dict[str, str]] = None,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     """
     Определяет типы колонок и приводит данные к этим типам.
+    Поддерживает известные типы из словаря данных (data_dictionary.csv).
 
     Args:
         df: исходный датасет (не изменяется).
         category_threshold: колонка - категория, если nunique < threshold * n_rows.
+        known_types: словарь {колонка: тип} из словаря данных (опционально).
 
     Returns:
         (преобразованный DataFrame, {колонка: тип}).
     """
     converted: dict[str, pd.Series] = {}
     column_types: dict[str, str] = {}
+    known = known_types or {}
+
     for name in df.columns:
-        converted[name], column_types[name] = _infer_column(df[name], category_threshold)
+        col = df[name]
+        hint = known.get(name, "").lower()
+
+        if hint in ("category", "categorical"):
+            col_norm = _normalize_missing(col)
+            converted[name] = col_norm.astype("category")
+            column_types[name] = CATEGORY
+        elif hint in ("numeric", "float", "integer", "int"):
+            col_norm = _normalize_missing(col)
+            num = _try_numeric(col_norm)
+            if num is not None:
+                converted[name] = num
+            else:
+                converted[name] = pd.to_numeric(_clean_number_text(col_norm.astype(str)), errors="coerce")
+            column_types[name] = NUMERIC
+        elif hint in ("datetime", "date", "time"):
+            col_norm = _normalize_missing(col)
+            dt = _try_datetime(col_norm)
+            converted[name] = dt if dt is not None else col
+            column_types[name] = DATETIME
+        else:
+            converted[name], column_types[name] = _infer_column(col, category_threshold)
+
     return pd.DataFrame(converted, index=df.index), column_types

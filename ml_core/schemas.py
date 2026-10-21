@@ -14,7 +14,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 
 # --------------------------------------------------------------------------- #
@@ -200,6 +203,7 @@ class SplitResult:
     target: str = ""
     time_col: Optional[str] = None
     group_col: Optional[str] = None
+    folds: Optional[list[tuple[Any, Any]]] = None
 
     def summary(self) -> dict[str, Any]:
         """Краткая сводка по размерам выборок."""
@@ -209,6 +213,7 @@ class SplitResult:
             "train_shape": list(self.train.shape),
             "test_shape": list(self.test.shape),
             "val_shape": list(self.val.shape) if self.val is not None else None,
+            "n_folds": len(self.folds) if self.folds is not None else 0,
         }
 
 

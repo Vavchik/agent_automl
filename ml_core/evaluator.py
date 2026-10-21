@@ -11,26 +11,50 @@ from __future__ import annotations
 
 from typing import Any, Optional, Union
 import numpy as np
-import pandas as pd
-from sklearn.dummy import DummyClassifier, DummyRegressor
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    log_loss,
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
-    roc_auc_score,
-)
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+try:
+    from sklearn.dummy import DummyClassifier, DummyRegressor
+    from sklearn.metrics import (
+        accuracy_score,
+        f1_score,
+        log_loss,
+        mean_absolute_error,
+        mean_squared_error,
+        r2_score,
+        roc_auc_score,
+    )
+    HAS_SKLEARN = True
+except ImportError:
+    HAS_SKLEARN = False
+    DummyClassifier = DummyRegressor = None
 
 from ml_core.schemas import EvalResult
 
 
-CLASSIFICATION_METRICS = {"roc_auc", "macro_f1", "f1_macro", "accuracy", "logloss", "multiclass"}
+CLASSIFICATION_METRICS = {"roc_auc", "macro_f1", "f1_macro", "weighted_f1", "accuracy", "logloss", "multiclass"}
 
 
 def _is_classification_metric(metric: str) -> bool:
     return metric.lower() in CLASSIFICATION_METRICS
+
+
+def _numpy_macro_f1(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Чистый numpy расчет Macro F1 без зависимости от scikit-learn."""
+    classes = np.unique(np.concatenate([y_true, y_pred]))
+    if len(classes) == 0:
+        return 0.0
+    f1_list = []
+    for c in classes:
+        tp = np.sum((y_true == c) & (y_pred == c))
+        fp = np.sum((y_true != c) & (y_pred == c))
+        fn = np.sum((y_true == c) & (y_pred != c))
+        denom = 2 * tp + fp + fn
+        f1_list.append((2.0 * tp / denom) if denom > 0 else 0.0)
+    return float(np.mean(f1_list))
 
 
 def compute_metric(
@@ -40,51 +64,42 @@ def compute_metric(
     metric: str = "roc_auc",
 ) -> float:
     """
-    Вычисляет значение указанной метрики качества.
+    Вычисляет значение указанной метрики качества (через sklearn или numpy fallback).
     """
     y_true_arr = np.asarray(y_true)
     y_pred_arr = np.asarray(y_pred)
     metric_norm = metric.lower()
 
-    if metric_norm in ("roc_auc", "auc"):
-        # Если вероятности переданы
-        if y_proba is not None:
-            proba_arr = np.asarray(y_proba)
-            # Проверка на число классов
-            unique_classes = np.unique(y_true_arr)
-            if len(unique_classes) < 2:
-                return 0.5
-
-            if len(unique_classes) == 2:
-                # Бинарная классификация: берем вероятность положительного класса
-                if proba_arr.ndim == 2 and proba_arr.shape[1] >= 2:
-                    p = proba_arr[:, 1]
-                else:
-                    p = proba_arr.ravel()
-                try:
-                    return float(roc_auc_score(y_true_arr, p))
-                except Exception:
-                    pass
-            else:
-                # Мультикласс
-                try:
-                    return float(roc_auc_score(y_true_arr, proba_arr, multi_class="ovr"))
-                except Exception:
-                    pass
-
-        # Fallback если нет вероятностей
-        try:
-            return float(roc_auc_score(y_true_arr, y_pred_arr))
-        except Exception:
-            return float(accuracy_score(y_true_arr, y_pred_arr))
-
     if metric_norm in ("macro_f1", "f1_macro", "f1"):
-        return float(f1_score(y_true_arr, y_pred_arr, average="macro", zero_division=0))
+        if HAS_SKLEARN:
+            return float(f1_score(y_true_arr, y_pred_arr, average="macro", zero_division=0))
+        return _numpy_macro_f1(y_true_arr, y_pred_arr)
+
+    if metric_norm in ("weighted_f1", "f1_weighted"):
+        if HAS_SKLEARN:
+            return float(f1_score(y_true_arr, y_pred_arr, average="weighted", zero_division=0))
+        return _numpy_macro_f1(y_true_arr, y_pred_arr)
 
     if metric_norm == "accuracy":
-        return float(accuracy_score(y_true_arr, y_pred_arr))
+        if HAS_SKLEARN:
+            return float(accuracy_score(y_true_arr, y_pred_arr))
+        return float(np.mean(y_true_arr == y_pred_arr))
 
-    if metric_norm in ("logloss", "multiclass"):
+    if metric_norm in ("rmse", "root_mean_squared_error"):
+        if HAS_SKLEARN:
+            mse = mean_squared_error(y_true_arr, y_pred_arr)
+            return float(np.sqrt(mse))
+        return float(np.sqrt(np.mean((y_true_arr.astype(float) - y_pred_arr.astype(float)) ** 2)))
+
+    if metric_norm in ("mae", "mean_absolute_error"):
+        if HAS_SKLEARN:
+            return float(mean_absolute_error(y_true_arr, y_pred_arr))
+        return float(np.mean(np.abs(y_true_arr.astype(float) - y_pred_arr.astype(float))))
+
+    if metric_norm in ("r2", "r2_score") and HAS_SKLEARN:
+        return float(r2_score(y_true_arr, y_pred_arr))
+
+    if metric_norm in ("logloss", "multiclass") and HAS_SKLEARN:
         if y_proba is not None:
             try:
                 return float(log_loss(y_true_arr, y_proba))
@@ -92,21 +107,62 @@ def compute_metric(
                 pass
         return float(log_loss(y_true_arr, y_pred_arr))
 
-    if metric_norm in ("rmse", "root_mean_squared_error"):
-        mse = mean_squared_error(y_true_arr, y_pred_arr)
-        return float(np.sqrt(mse))
+    if metric_norm in ("roc_auc", "auc") and HAS_SKLEARN:
+        if y_proba is not None:
+            proba_arr = np.asarray(y_proba)
+            unique_classes = np.unique(y_true_arr)
+            if len(unique_classes) < 2:
+                return 0.5
+            if len(unique_classes) == 2:
+                p = proba_arr[:, 1] if proba_arr.ndim == 2 and proba_arr.shape[1] >= 2 else proba_arr.ravel()
+                try:
+                    return float(roc_auc_score(y_true_arr, p))
+                except Exception:
+                    pass
+            else:
+                try:
+                    return float(roc_auc_score(y_true_arr, proba_arr, multi_class="ovr"))
+                except Exception:
+                    pass
+        try:
+            return float(roc_auc_score(y_true_arr, y_pred_arr))
+        except Exception:
+            return float(accuracy_score(y_true_arr, y_pred_arr))
 
-    if metric_norm in ("mae", "mean_absolute_error"):
-        return float(mean_absolute_error(y_true_arr, y_pred_arr))
-
-    if metric_norm in ("r2", "r2_score"):
-        return float(r2_score(y_true_arr, y_pred_arr))
-
-    # Fallback на RMSE для регрессии или Accuracy для классификации
+    # Fallback
     try:
-        return float(mean_squared_error(y_true_arr, y_pred_arr))
+        return float(np.sqrt(np.mean((y_true_arr.astype(float) - y_pred_arr.astype(float)) ** 2)))
     except Exception:
-        return float(accuracy_score(y_true_arr, y_pred_arr))
+        return float(np.mean(y_true_arr == y_pred_arr))
+
+
+def is_metric_better(
+    new_score: float,
+    base_score: float,
+    metric: str = "macro_f1",
+    min_delta: float = 0.0,
+) -> bool:
+    """
+    Определяет, стал ли новый скор лучше базового с учетом направления метрики:
+    - Для RMSE / MAE / LogLoss: меньше = лучше (new < base - min_delta);
+    - Для Macro F1 / ROC-AUC / Accuracy / R2: больше = лучше (new > base + min_delta).
+    """
+    metric_norm = metric.lower()
+    if metric_norm in ("rmse", "root_mean_squared_error", "mae", "mean_absolute_error", "logloss"):
+        return new_score < (base_score - min_delta)
+    return new_score > (base_score + min_delta)
+
+
+def evaluate_oof(
+    y_true: Union[pd.Series, np.ndarray, list],
+    y_oof_pred: Union[pd.Series, np.ndarray, list],
+    y_oof_proba: Optional[Union[pd.Series, np.ndarray]] = None,
+    metric: str = "macro_f1",
+) -> float:
+    """
+    Вычисляет честную Out-of-Fold (OOF) метрику по всей выборке кросс-валидации.
+    """
+    return compute_metric(y_true=y_true, y_pred=y_oof_pred, y_proba=y_oof_proba, metric=metric)
 
 
 def _predict_model(

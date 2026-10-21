@@ -10,15 +10,31 @@
 from __future__ import annotations
 
 from typing import Any, Optional
-import pandas as pd
 
-from agent.graph import app as pipeline_graph, make_initial_state, PipelineState
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+try:
+    from agent.graph import app as pipeline_graph, make_initial_state, PipelineState
+except ImportError:
+    pipeline_graph = None
+    make_initial_state = None
+    PipelineState = None
+
 from agent.meta_analyst import select_model_and_metric
-from ml_core.data_profiler import profile_data
-from ml_core.evaluator import evaluate_model
 from ml_core.schemas import DataProfileReport, EvalResult, ModelSelectionDecision, SplitResult
 from ml_core.splitter import split_data
-from ml_core.type_inference import infer_types
+
+try:
+    from ml_core.data_profiler import profile_data
+    from ml_core.evaluator import evaluate_model
+    from ml_core.type_inference import infer_types
+except ImportError:
+    profile_data = None
+    evaluate_model = None
+    infer_types = None
 
 
 class AutoMLOrchestrator:
@@ -30,14 +46,22 @@ class AutoMLOrchestrator:
     def __init__(
         self,
         target: str,
+        id_col: Optional[str] = None,
         time_col: Optional[str] = None,
         group_col: Optional[str] = None,
         target_metric_threshold: float = 0.0,
+        known_types: Optional[dict[str, str]] = None,
+        task_description: Optional[str] = None,
+        metric_hint: Optional[str] = None,
     ):
         self.target = target
+        self.id_col = id_col
         self.time_col = time_col
         self.group_col = group_col
         self.target_metric_threshold = target_metric_threshold
+        self.known_types = known_types or {}
+        self.task_description = task_description
+        self.metric_hint = metric_hint
 
         self.clean_df: Optional[pd.DataFrame] = None
         self.column_types: dict[str, str] = {}
@@ -93,19 +117,28 @@ class AutoMLOrchestrator:
 
     def run_stage_profile(self, df: pd.DataFrame) -> DataProfileReport:
         """Стадия 1 (Жесткий код): Очистка мусора, определение типов и сбор профиля."""
-        self.clean_df, self.column_types = infer_types(df)
-        self.report = profile_data(self.clean_df, self.column_types, target=self.target)
+        self.clean_df, self.column_types = infer_types(df, known_types=self.known_types)
+        self.report = profile_data(self.clean_df, self.column_types, target=self.target, id_col=self.id_col)
         return self.report
 
     def run_stage_meta_analysis(self) -> ModelSelectionDecision:
         """Стадия 2 (АГЕНТ): Выбор архитектур, лосса и метрики через LLM Qwen."""
         if self.report is None:
             raise ValueError("Сначала запустите run_stage_profile()")
-        self.decision = select_model_and_metric(self.report)
+        self.decision = select_model_and_metric(
+            metadata=self.report,
+            task_description=self.task_description,
+            metric_hint=self.metric_hint,
+        )
         return self.decision
 
-    def run_stage_split(self, test_size: float = 0.2, val_size: float = 0.1) -> SplitResult:
-        """Стадия 3 (Жесткий код): Детерминированное разбиение выборки."""
+    def run_stage_split(
+        self,
+        test_size: float = 0.2,
+        val_size: float = 0.1,
+        n_folds: int = 5,
+    ) -> SplitResult:
+        """Стадия 3 (Жесткий код): Детерминированное разбиение выборки и генерация K-Fold сплитов."""
         if self.clean_df is None:
             raise ValueError("Сначала запустите run_stage_profile()")
 
@@ -116,6 +149,7 @@ class AutoMLOrchestrator:
             strategy=strategy,
             test_size=test_size,
             val_size=val_size,
+            n_folds=n_folds,
             time_col=self.time_col,
             group_col=self.group_col,
         )
