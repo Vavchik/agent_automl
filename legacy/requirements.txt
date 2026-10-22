@@ -1,0 +1,15 @@
+pandas
+numpy
+scikit-learn
+lightgbm
+optuna
+langchain
+langchain-core
+langchain-openai
+langchain-anthropic
+python-dotenv
+
+openai
+langgraph
+pytest
+catboost

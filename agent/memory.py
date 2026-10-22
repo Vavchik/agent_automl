@@ -1,122 +1,50 @@
-"""
-Модуль долговременной и контекстной памяти агента (ExperimentMemory).
+"""Р4. Журнал экспериментов: память для LLM и материал для защиты.
 
-Хранит историю гипотез, сгенерированного кода, CV-метрик и ошибок.
-Используется LLM для рефлексии (Reflection): что сработало, что ухудшило скор,
-какие ошибки возникли в песочнице.
+Каждая запись сразу дописывается в experiments.jsonl рядом с task.md.
 """
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-import logging
-import time
-from typing import Optional
-
-logger = logging.getLogger("agent.memory")
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 
 @dataclass
-class ExperimentRecord:
-    """Запись об одном исследовательском эксперименте."""
+class Record:
     iteration: int
-    name: str
-    description: str
-    code: str
-    score: Optional[float]
-    baseline_score: float
-    delta: float = 0.0
-    status: str = "pending"  # "accepted", "rejected", "failed"
-    error_message: Optional[str] = None
-    duration_sec: float = 0.0
-    timestamp: float = field(default_factory=time.time)
+    action: str
+    hypothesis: str
+    score: float | None
+    best_before: float | None
+    accepted: bool
+    reason: str
+    seconds: float
+    error: str = ""
+    code: str = ""
 
 
-class ExperimentMemory:
-    """
-    Память экспериментов агента.
-    Сохраняет цепочку итераций Feature Engineering и предоставляет
-    сводку для промпта рефлексии.
-    """
+class Memory:
+    def __init__(self, path: Path | None = None):
+        self.path = path
+        self.records: list[Record] = []
 
-    def __init__(self, metric: str = "macro_f1", higher_is_better: bool = True):
-        self.metric = metric
-        self.higher_is_better = higher_is_better
-        self.records: list[ExperimentRecord] = []
-        self.best_score: Optional[float] = None
-        self.best_code_snippets: list[str] = []
-
-    def log_experiment(
-        self,
-        iteration: int,
-        name: str,
-        description: str,
-        code: str,
-        score: Optional[float],
-        baseline_score: float,
-        status: str,
-        error_message: Optional[str] = None,
-        duration_sec: float = 0.0,
-    ) -> ExperimentRecord:
-        """Регистрирует завершенный эксперимент."""
-        delta = 0.0
-        if score is not None:
-            delta = round(score - baseline_score, 6)
-
-        record = ExperimentRecord(
-            iteration=iteration,
-            name=name,
-            description=description,
-            code=code,
-            score=score,
-            baseline_score=baseline_score,
-            delta=delta,
-            status=status,
-            error_message=error_message,
-            duration_sec=duration_sec,
-        )
+    def log(self, record: Record) -> None:
         self.records.append(record)
+        if self.path is not None:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(asdict(record), ensure_ascii=False, default=str) + "\n")
 
-        if status == "accepted" and score is not None:
-            self.best_score = score
-            self.best_code_snippets.append(code)
+    def tried(self, action: str) -> int:
+        return sum(r.action == action for r in self.records)
 
-        logger.info(
-            f"[Memory] Эксперимент #{iteration} '{name}': {status.upper()} "
-            f"(Score: {score}, Delta: {delta:+.5f})"
-        )
-        return record
-
-    def get_best_score(self) -> Optional[float]:
-        return self.best_score
-
-    def get_accepted_records(self) -> list[ExperimentRecord]:
-        return [r for r in self.records if r.status == "accepted"]
-
-    def format_history_for_llm(self, max_records: int = 5) -> str:
-        """
-        Форматирует последние эксперименты для передачи в контекст LLM.
-        Показывает, какие гипотезы дали прирост, а какие привели к ошибке или падению скора.
-        """
-        if not self.records:
-            return "История экспериментов пуста. Это первая итерация."
-
-        recent = self.records[-max_records:]
-        lines = ["### Предыдущие эксперименты и рефлексия:"]
-
-        for r in recent:
-            status_symbol = "✅ ПРИНЯТО" if r.status == "accepted" else ("❌ ОТКЛОНЕНО" if r.status == "rejected" else "⚠️ ОШИБКА В КОДЕ")
-            lines.append(f"\n- **Эксперимент #{r.iteration}**: {r.description}")
-            lines.append(f"  • Статус: {status_symbol}")
-            if r.score is not None:
-                lines.append(f"  • Скор: {r.score:.5f} (изменение относительно бейзлайна: {r.delta:+.5f})")
-            if r.error_message:
-                clean_err = r.error_message.strip().split("\n")[-1]
-                lines.append(f"  • Ошибка в исполнении: `{clean_err}`")
-
-        lines.append(
-            "\n**Указание для новой гипотезы:** "
-            "Не повторяй идеи, которые привели к падению метрики или ошибке. "
-            "Если идея была принята, развивай это направление или предложи принципиально новый доменный признак."
-        )
-        return "\n".join(lines)
+    def summary(self, last: int = 10) -> str:
+        lines = []
+        for r in self.records[-last:]:
+            if r.error:
+                outcome = f"ошибка: {r.error[:200]}"
+            elif r.score is None:
+                outcome = "пропущено"
+            else:
+                outcome = f"{r.score:.5f} — {'ПРИНЯТО' if r.accepted else 'отклонено'} ({r.reason})"
+            lines.append(f"#{r.iteration} [{r.action}] {r.hypothesis[:200]} -> {outcome}")
+        return "\n".join(lines) or "Экспериментов ещё не было."

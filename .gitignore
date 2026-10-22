@@ -70,3 +70,17 @@ wandb/
 
 # Large documents & presentations
 *.pdf
+
+# Новая структура: артефакты запусков и стенда
+experiments.jsonl
+**/experiments.jsonl
+report.json
+**/report.json
+agent.log
+**/agent.log
+bench/tasks/
+bench/answers/
+bench/results.csv
+solution.zip
+dist/
+*.desktop
