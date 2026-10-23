@@ -95,20 +95,45 @@ def prepare_dataset(train: pd.DataFrame, test: pd.DataFrame, spec: TaskSpec) -> 
                    test_ids=test_ids, cat_cols=cat_cols)
 
 
-def profile_text(ds: Dataset, spec: TaskSpec, max_cols: int = 80) -> str:
-    """Короткий профиль данных для промптов LLM."""
-    lines = []
-    for col in list(ds.X.columns)[:max_cols]:
+def feature_schema(ds: Dataset, spec: TaskSpec, importance: dict[str, float] | None = None,
+                   max_features: int = 25) -> dict:
+    """Компактная схема данных для промптов LLM (~1-2 тыс. токенов): самые важные признаки,
+    их тип, пропуски, диапазон или топ-значения, асимметрия и описание из словаря."""
+    cols = list(ds.X.columns)
+    if importance:
+        total = sum(importance.values()) or 1.0
+        cols = sorted(cols, key=lambda c: -importance.get(c, 0.0))
+    features = []
+    for col in cols[:max_features]:
         s = ds.X[col]
-        miss = f"{s.isna().mean():.0%} пропусков"
+        item: dict = {"name": col, "missing": round(float(s.isna().mean()), 3)}
         if col in ds.cat_cols:
-            info = f"категория, {s.nunique()} значений, топ: {list(s.value_counts().index[:3])}"
+            item.update(type="category", unique=int(s.nunique()), top=[str(v)[:30] for v in s.value_counts().index[:3]])
         else:
-            info = f"число, min {s.min():.4g}, median {s.median():.4g}, max {s.max():.4g}"
-        desc = spec.feature_descriptions.get(col, "")
-        lines.append(f"- {col}: {info}, {miss}. {desc}".strip())
+            q = s.quantile([0.01, 0.5, 0.99])
+            item.update(type="number", range_p1_p99=[float(f"{q.iloc[0]:.3g}"), float(f"{q.iloc[2]:.3g}")],
+                        median=float(f"{q.iloc[1]:.3g}"))
+            if s.nunique() <= 20:
+                item["unique"] = int(s.nunique())
+            skew = s.skew()
+            if pd.notna(skew) and abs(skew) > 1:
+                item["skew"] = round(float(skew), 1)
+        if importance:
+            item["importance"] = round(importance.get(col, 0.0) / total, 3)
+        desc = spec.feature_descriptions.get(col)
+        if desc:
+            item["description"] = desc[:70]
+        features.append(item)
     if spec.is_classification:
-        target = f"классы: {ds.y.value_counts().to_dict()}"
+        shares = ds.y.value_counts(normalize=True)
+        target = {"classes": {str(k): round(float(v), 4) for k, v in shares.items()}}
     else:
-        target = f"min {ds.y.min():.4g}, median {ds.y.median():.4g}, max {ds.y.max():.4g}, skew {ds.y.skew():.2f}"
-    return f"Таргет {spec.target_col}: {target}\nПризнаки:\n" + "\n".join(lines)
+        y = ds.y
+        target = {"min": float(f"{y.min():.4g}"), "median": float(f"{y.median():.4g}"),
+                  "max": float(f"{y.max():.4g}"), "skew": round(float(y.skew()), 2)}
+    return {
+        "task": spec.task_type, "metric": spec.metric, "target": spec.target_col, "target_stats": target,
+        "rows": {"train": len(ds.X), "test": len(ds.X_test)}, "n_features": ds.X.shape[1],
+        "time_col": spec.time_col, "features": features,
+        "other_features": cols[max_features:max_features + 40],
+    }

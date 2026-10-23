@@ -1,0 +1,13 @@
+feature,role,dtype,unit,description_ru
+id,id,int64,,
+s0,feature,float64,,
+s1,feature,float64,,
+s2,feature,float64,,
+s3,feature,float64,,
+s4,feature,float64,,
+s5,feature,float64,,
+s6,feature,float64,,
+s7,feature,float64,,
+s8,feature,float64,,
+s9,feature,float64,,
+grade,target,str,,

@@ -1,0 +1,12 @@
+feature,role,dtype,unit,description_ru
+id,id,int64,,
+x0,feature,float64,,
+x1,feature,float64,,
+x2,feature,float64,,
+x3,feature,float64,,
+x4,feature,float64,,
+x5,feature,float64,,
+x6,feature,float64,,
+x7,feature,float64,,
+event_date,feature,str,,Дата события
+profit,target,float64,,

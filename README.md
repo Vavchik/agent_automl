@@ -1,17 +1,20 @@
 # AutoML-агент для хакатона «Альфа Хак: AutoML»
 
 Агент получает `task.md` с данными и сам доводит задачу до `submission.csv`: понимает задачу,
-строит честную валидацию, обучает бейзлайн и затем в цикле AutoResearch проверяет гипотезы
-(признаки от LLM, преобразование таргета, веса классов, подбор параметров, отбор признаков),
-принимая только устойчивые улучшения.
+строит честную валидацию, обучает бейзлайн и затем ищет улучшения по дереву решений (как AIDE):
+каждая гипотеза (признаки от LLM, log-таргет, веса классов, тюнинг, отбор и слияние признаков) —
+новый узел; узлы без устойчивого прироста становятся тупиками, поиск откатывается к лучшим веткам,
+удачные ветки объединяются. Упавший код LLM чинит по traceback. В конце — бленд моделей,
+AutoGluon best_quality на тех же фолдах и ансамбль лучших узлов.
 
 ```bash
 python solution.py path/to/task.md            # как на платформе
 AUTOML_FAST=1 python solution.py path/to/task.md   # быстрый режим для отладки (~1-2 мин)
 ```
 
-LLM включается переменными `OPENAI_API_KEY`, `OPENAI_MODEL` (и `OPENAI_BASE_URL`).
-Без них агент работает на эвристиках — так же устойчиво, но без гипотез от LLM.
+LLM включается переменной `OPENAI_API_KEY` (+ `OPENAI_MODEL`, `OPENAI_BASE_URL`, иначе значения из `config.py`).
+На платформе их выставляет проверяющая система, как для `baseline.py`, — ключ в код не вписываем.
+Локально без ключа агент работает на эвристиках; первая строка `agent.log` говорит, включена ли LLM.
 
 ## Как устроен запуск
 
@@ -22,8 +25,10 @@ solution.py            страховка: при любом сбое до пе�
     2. task/dtypes.py                   признаки; категории общие для train и test
     3. validation/splits.py             фолды под тест (время / stratified / KFold), adversarial-проверка
     4. ml/trainer.py                    бейзлайн LightGBM -> submission.csv v0
-    5. agent/research_loop.py           планировщик -> гипотеза -> эксперимент -> правило принятия
-    6. ml/trainer.py + ml/ensemble.py   бленд LightGBM + CatBoost + XGBoost, ансамбль экспериментов
+    5. agent/research_loop.py + tree.py дерево решений: узел -> действие (planner) -> кандидат (actions,
+                                        починка кода по traceback) -> обучение -> правило принятия
+    6. ml/trainer.py, autogluon_stage.py, ensemble.py
+                                        бленд LightGBM + CatBoost + XGBoost, AutoGluon на наших фолдах, ансамбль
 ```
 
 После шага 4 `submission.csv` существует всегда, дальше он только улучшается.
@@ -51,7 +56,7 @@ pytest -q                          # юнит-тесты + сквозной пр
 python bench/run_bench.py          # все задачи в быстром режиме -> bench/results.csv
 python bench/run_bench.py --only bench/tasks   # только синтетические «private»-задачи
 docker/run_task.sh "given_data/Регрессия"      # как на платформе: 8 CPU, 32 GB
-scripts/build_zip.sh               # solution.zip для загрузки
+scripts/build_zip.sh               # solution.zip: в корне solution.py (все модули внутри) + requirements.txt
 ```
 
 Сабмит отправляет только Р1 и только после зелёного стенда, включая синтетические задачи:

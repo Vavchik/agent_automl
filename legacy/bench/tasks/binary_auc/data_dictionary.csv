@@ -1,0 +1,16 @@
+feature,role,dtype,unit,description_ru
+client_id,id,str,,
+f0,feature,float64,,
+f1,feature,float64,,
+f2,feature,float64,,
+f3,feature,float64,,
+f4,feature,float64,,
+f5,feature,float64,,
+f6,feature,float64,,
+f7,feature,float64,,
+f8,feature,float64,,
+f9,feature,float64,,
+f10,feature,float64,,
+f11,feature,float64,,
+region,feature,str,,Регион
+churn,target,int64,,

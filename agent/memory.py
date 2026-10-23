@@ -21,6 +21,8 @@ class Record:
     seconds: float
     error: str = ""
     code: str = ""
+    node_id: int | None = None
+    parent_id: int | None = None
 
 
 class Memory:

@@ -68,7 +68,8 @@ def main() -> None:
             "ok": not crashed and (task_md.parent / "submission.csv").exists(),
             "metric": report.get("metric"), "cv_baseline": report.get("baseline_score"),
             "cv_best": report.get("best_score"), "true_score": true_score(task_md.parent, report) if report else None,
-            "accepted": report.get("accepted"), "validation": report.get("validation"),
+            "nodes": report.get("nodes"), "improving": report.get("improving_nodes"),
+            "failed": report.get("failed_nodes"), "validation": report.get("validation"),
             "seconds": round(time.time() - start), "llm_tokens": report.get("llm_tokens"),
         })
     table = pd.DataFrame(rows)
